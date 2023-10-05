@@ -95,6 +95,19 @@ def score(imgs_path: list, prompt: str) -> float:
     res = scr.score(imgs_path, prompt)
     return res
 
+def score_numpy(imgs_path: list, prompt: str) -> float:
+    """Score the image and prompt
+
+    Args:
+        imgs_path (list): numpy arrays of generated
+        prompt (str): corresponding prompt
+
+    Returns:
+        float: matching scores for images and prompt
+    """
+    res = scr.score_numpy(imgs_path, prompt)
+    return res
+
 def benchmark_prompts(style: str = 'all') -> Union[dict, list]:
     """Get benchmark prompts of certain style
 
