@@ -15,6 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer
 from hpsv2.src.training.train import calc_ImageReward, inversion_score
 from hpsv2.src.training.data import ImageRewardDataset, collate_rank, RankingDataset
+from module import ViewQualityModel
 
 
 environ_root = os.environ.get('HPS_ROOT')
@@ -68,7 +69,7 @@ def evaluate_IR(data_path, image_folder, model, batch_size, preprocess_val, toke
             labels = [label for label in labels.split(num_images.tolist())]
             score +=sum([calc_ImageReward(paired_logits_list[i].tolist(), labels[i]) for i in range(len(hps_ranking))])
     print('ImageReward:', score/total)
-
+    
 def evaluate_rank(data_path, image_folder, model, batch_size, preprocess_val, tokenizer, device):
     meta_file = data_path + '/test.json'
     dataset = RankingDataset(meta_file, image_folder, preprocess_val, tokenizer)
@@ -84,7 +85,7 @@ def evaluate_rank(data_path, image_folder, model, batch_size, preprocess_val, to
             texts = texts.to(device=device, non_blocking=True)
             num_images = num_images.to(device=device, non_blocking=True)
             labels = labels.to(device=device, non_blocking=True)
-
+            
             with torch.cuda.amp.autocast():
                 outputs = model(images, texts)
                 image_features, text_features, logit_scale = outputs["image_features"], outputs["text_features"], outputs["logit_scale"]
@@ -93,8 +94,62 @@ def evaluate_rank(data_path, image_folder, model, batch_size, preprocess_val, to
 
             predicted = [torch.argsort(-k) for k in paired_logits_list]
             hps_ranking = [[predicted[i].tolist().index(j) for j in range(n)] for i,n in enumerate(num_images)]
+            
             labels = [label for label in labels.split(num_images.tolist())]
             all_rankings.extend(hps_ranking)
+            
+            score += sum([inversion_score(hps_ranking[i], labels[i]) for i in range(len(hps_ranking))])
+    print('ranking_acc:', score/total)
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    with open('logs/hps_rank.json', 'w') as f:
+        json.dump(all_rankings, f)
+        
+def compute_rankings(images, texts, batch_size, model):
+    from itertools import combinations
+    from elo_rating import PairedComparison, rank_elements
+    # images.shape (B*N, 3, 224, 224)
+    images = images.view(batch_size, -1, 3, 224, 224)
+    N = images.shape[1]
+    
+    predictions = []
+    for (A, B) in combinations(range(N), 2):
+        imageA = images[:, A, ...]
+        imageB = images[:, B, ...]
+        # todo get model predictions
+        pred = model(imageA, imageB).sigmoid().round()
+        predictions.append(pred)
+        
+    result = torch.zeros((batch_size, N))
+    for bIdx in range(batch_size):
+        paired_comparisons = []
+        for i,(A,B) in enumerate(combinations(range(N), 2)):
+            paired_comparisons.append(PairedComparison(A, B, predictions[i][bIdx].detach().cpu().item()))
+        ranking = rank_elements(paired_comparisons)
+        result[bIdx, :] = torch.tensor(ranking).long()
+    return result.tolist()
+    
+def evaluate_rank_ours(data_path, image_folder, model, batch_size, preprocess_val, tokenizer, device):
+    meta_file = data_path + '/test.json'
+    dataset = RankingDataset(meta_file, image_folder, preprocess_val, tokenizer)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_rank)
+    
+    score = 0
+    total = len(dataset)
+    all_rankings = []
+    with torch.no_grad():
+        for batch in tqdm(dataloader):
+            images, num_images, labels, texts = batch
+            images = images.to(device=device, non_blocking=True)
+            texts = texts.to(device=device, non_blocking=True)
+            num_images = num_images.to(device=device, non_blocking=True)
+            labels = labels.to(device=device, non_blocking=True)
+            
+            hps_ranking = compute_rankings(images, texts, batch_size, model)
+
+            labels = [label for label in labels.split(num_images.tolist())]
+            all_rankings.extend(hps_ranking)
+            
             score += sum([inversion_score(hps_ranking[i], labels[i]) for i in range(len(hps_ranking))])
     print('ranking_acc:', score/total)
     if not os.path.exists('logs'):
@@ -252,13 +307,18 @@ def evaluate(mode: str, root_dir: str, data_path: str = os.path.join(root_path,'
                     HPSv2.flush()
         print('Download HPS_v2_compressed.pt to {} sucessfully.'.format(root_path+'/'))
     
+    
     initialize_model()
     model = model_dict['model']
     preprocess_val = model_dict['preprocess_val']
-
+    
     print('Loading model ...')
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['state_dict'])
+    if mode == "testours":
+        model = ViewQualityModel.load_from_checkpoint(checkpoint_path).model
+    else:
+        checkpoint = torch.load(checkpoint_path)
+        print(checkpoint)
+        model.load_state_dict(checkpoint['state_dict'])
     tokenizer = get_tokenizer(model_name)
     model.eval()
     print('Loading model successfully!')
@@ -268,6 +328,8 @@ def evaluate(mode: str, root_dir: str, data_path: str = os.path.join(root_path,'
         evaluate_IR(data_path, root_dir, model, batch_size, preprocess_val, tokenizer, device)
     elif mode == 'test':
         evaluate_rank(data_path, root_dir, model, batch_size, preprocess_val, tokenizer, device)
+    elif mode == 'testours':
+        evaluate_rank_ours(data_path, root_dir, model, batch_size, preprocess_val, tokenizer, device)
     elif mode == 'benchmark_all':
         evaluate_benchmark_all(data_path, root_dir, model, batch_size, preprocess_val, tokenizer, device)
     elif mode == 'benchmark':
@@ -280,7 +342,7 @@ def evaluate(mode: str, root_dir: str, data_path: str = os.path.join(root_path,'
 if __name__ == '__main__':
     # Parse arguments
     parser = ArgumentParser()
-    parser.add_argument('--data-type', type=str, required=True, choices=['benchmark', 'benchmark_all', 'test', 'ImageReward', 'drawbench'])
+    parser.add_argument('--data-type', type=str, required=True, choices=['benchmark', 'benchmark_all', 'test', 'testours', 'ImageReward', 'drawbench'])
     parser.add_argument('--data-path', type=str, required=True, help='path to dataset')
     parser.add_argument('--image-path', type=str, required=True, help='path to image files')
     parser.add_argument('--checkpoint', type=str, default=os.path.join(root_path,'HPS_v2_compressed.pt'), help='path to checkpoint')
