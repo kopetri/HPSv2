@@ -127,6 +127,34 @@ def score_numpy(images: list, prompt: str, cp: str = os.path.join(root_path, 'HP
         result.append(hps_score[0])
     return result
 
+def HPSv2Model(cp: str = os.path.join(root_path, 'HPS_v2_compressed.pt')) -> float:
+
+    initialize_model()
+    model = model_dict['model']
+    preprocess_val = model_dict['preprocess_val']
+
+    # check if the checkpoint exists
+    if not os.path.exists(root_path):
+        os.makedirs(root_path)
+    if cp == os.path.join(root_path, 'HPS_v2_compressed.pt') and not os.path.exists(cp):
+        print('Downloading HPS_v2_compressed.pt ...')
+        url = 'https://huggingface.co/spaces/xswu/HPSv2/resolve/main/HPS_v2_compressed.pt'
+        r = requests.get(url, stream=True)
+        with open(os.path.join(root_path,'HPS_v2_compressed.pt'), 'wb') as HPSv2:
+            total_length = int(r.headers.get('content-length'))
+            for chunk in progress.bar(r.iter_content(chunk_size=1024), expected_size=(total_length/1024) + 1): 
+                if chunk:
+                    HPSv2.write(chunk)
+                    HPSv2.flush()
+        print('Download HPS_2_compressed.pt to {} sucessfully.'.format(root_path+'/'))
+    
+    checkpoint = torch.load(cp)
+    model.load_state_dict(checkpoint['state_dict'])
+    tokenizer = get_tokenizer('ViT-H-14')
+    model.eval()
+    
+    return model, tokenizer, preprocess_val
+
 if __name__ == '__main__':
     # Create an argument parser
     parser = argparse.ArgumentParser()
