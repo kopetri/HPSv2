@@ -127,7 +127,7 @@ def score_numpy(images: list, prompt: str, cp: str = os.path.join(root_path, 'HP
         result.append(hps_score[0])
     return result
 
-def HPSv2Model(cp: str = os.path.join(root_path, 'HPS_v2_compressed.pt')) -> float:
+def initHPSv2Model(cp: str = os.path.join(root_path, 'HPS_v2_compressed.pt')):
 
     initialize_model()
     model = model_dict['model']
