@@ -15,7 +15,10 @@ from torch.utils.data import Dataset, DataLoader
 from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer
 from hpsv2.src.training.train import calc_ImageReward, inversion_score
 from hpsv2.src.training.data import ImageRewardDataset, collate_rank, RankingDataset
-from module import ViewQualityModel
+try:
+    from module import ViewQualityModel
+except:
+    print("ViewQualityModel not available")
 
 
 environ_root = os.environ.get('HPS_ROOT')
